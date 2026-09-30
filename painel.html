@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painel RFID</title>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e3e5e9;
+    --blue: #2563eb; --green: #16a34a; --red: #dc2626; --amber: #d97706;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  input { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; flex: 1; min-width: 0; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 6px; padding: 9px 14px; cursor: pointer; color: #fff; background: var(--blue); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.big { flex: 1; padding: 14px; font-size: 16px; }
+  button.green { background: var(--green); } button.red { background: var(--red); } button.gray { background: #4b5563; }
+  .chip { font-size: 12px; padding: 5px 10px; border-radius: 999px; font-weight: 600; background: #eef0f3; color: var(--text); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--red); margin-right: 6px; }
+  .on .dot { background: var(--green); }
+  .kv { font-size: 14px; line-height: 1.7; }
+  .kv b { display: inline-block; min-width: 50px; color: var(--muted); font-weight: 500; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag { font-family: ui-monospace, Consolas, monospace; background: #eef0f3; border-radius: 6px; padding: 4px 8px; font-size: 13px; }
+  #countdown { font-weight: 700; color: var(--amber); }
+  #log { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; max-height: 360px; overflow: auto; }
+  .ev { padding: 7px 8px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 70px 90px 1fr; gap: 8px; word-break: break-all; }
+  .ev .t { color: var(--muted); }
+  .ev .k { font-weight: 700; }
+  .k.acesso-ok, .k.cad-ok { color: var(--green); } .k.acesso-no, .k.cad-no { color: var(--red); }
+  .k.cmd { color: var(--blue); } .k.info { color: var(--muted); }
+  .full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Painel do Leitor RFID</h1>
+  <div class="sub">Central da Ana: manda comandos e mostra as mensagens do leitor (broker test.mosquitto.org via WebSocket)</div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>Conexão</h2>
+      <div class="row">
+        <input id="nome" value="GabrielTelles" placeholder="SEU-NOME (igual ao código)">
+        <button id="btnCon">Conectar</button>
+      </div>
+      <div class="row">
+        <span id="status" class="chip"><span class="dot"></span><span id="statusTxt">Desconectado</span></span>
+        <span class="chip" id="prefixo">sis1a/GabrielTelles/rfid/</span>
+      </div>
+      <div class="kv" id="leitor">
+        <div><b>MAC</b> <span id="mac">—</span></div>
+        <div><b>IP</b> <span id="ip">—</span></div>
+        <div><b>Hora</b> <span id="hora">—</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Comandos</h2>
+      <div class="row">
+        <button class="big green" id="btnCad" disabled>CADASTRO</button>
+        <button class="big" id="btnList" disabled>LISTAR</button>
+      </div>
+      <div class="row">
+        <button class="big red" id="btnRemCartao" disabled>REMOVER (passar cartão)</button>
+      </div>
+      <div class="row" id="cadInfo" style="display:none">
+        <span id="modoTxt">Modo cadastro</span>: passe qualquer cartão no leitor · <span id="countdown">15</span> s
+      </div>
+      <div class="row">
+        <input id="uid" placeholder="UID para remover, ex: 11 22 33 44">
+        <button class="red" id="btnRem" disabled>REMOVER UID</button>
+      </div>
+    </section>
+
+    <section class="card full">
+      <h2>Cartões cadastrados (último LISTAR)</h2>
+      <div class="tags" id="tags"><span class="sub">Clique em LISTAR para atualizar.</span></div>
+    </section>
+
+    <section class="card full">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Mensagens</h2>
+        <button class="gray" id="btnLimpar">Limpar</button>
+      </div>
+      <div id="log"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let client = null;
+let prefixo = "";
+let timerCad = null;
+
+const UID_NOMES = {
+  "01 02 03 04": "Blue", "11 22 33 44": "Green", "55 66 77 88": "Yellow",
+  "AA BB CC DD": "Red", "04 11 22 33 44 55 66": "NFC Tag", "C0 FF EE 99": "Key Fob"
+};
+const nomeCartao = (uid) => UID_NOMES[uid] ? `${uid} (${UID_NOMES[uid]})` : uid;
+
+function agora() { return new Date().toLocaleTimeString("pt-BR"); }
+
+function log(tipo, classe, texto) {
+  const div = document.createElement("div");
+  div.className = "ev";
+  div.innerHTML = `<span class="t">${agora()}</span><span class="k ${classe}"></span><span></span>`;
+  div.children[1].textContent = tipo;
+  div.children[2].textContent = texto;
+  $("log").prepend(div);
+}
+
+function setConectado(on) {
+  $("status").classList.toggle("on", on);
+  $("statusTxt").textContent = on ? "Conectado" : "Desconectado";
+  $("btnCon").textContent = on ? "Desconectar" : "Conectar";
+  ["btnCad", "btnList", "btnRem", "btnRemCartao"].forEach((b) => ($(b).disabled = !on));
+}
+
+function atualizaPrefixo() {
+  prefixo = `sis1a/${$("nome").value.trim()}/rfid/`;
+  $("prefixo").textContent = prefixo;
+}
+$("nome").addEventListener("input", atualizaPrefixo);
+
+function conectar() {
+  if (client) { client.end(true); client = null; setConectado(false); return; }
+  atualizaPrefixo();
+  $("statusTxt").textContent = "Conectando...";
+  client = mqtt.connect("wss://test.mosquitto.org:8081/mqtt", {
+    clientId: "painel-" + Math.random().toString(16).slice(2, 8),
+    reconnectPeriod: 3000
+  });
+  client.on("connect", () => {
+    setConectado(true);
+    client.subscribe(prefixo + "#");
+    log("painel", "info", "Conectado. Ouvindo " + prefixo + "#");
+  });
+  client.on("reconnect", () => ($("statusTxt").textContent = "Reconectando..."));
+  client.on("close", () => client && setConectado(false));
+  client.on("error", (e) => log("erro", "acesso-no", e.message));
+  client.on("message", tratarMensagem);
+}
+
+function tratarMensagem(topico, payload) {
+  const sub = topico.slice(prefixo.length);
+  const texto = payload.toString();
+  let d = null;
+  try { d = JSON.parse(texto); } catch (_) {}
+
+  if (sub === "cmd") { log("cmd", "cmd", texto); return; }
+  if (!d) { log(sub, "info", texto); return; }
+  if (sub === "lista" || sub === "cadastro") clearTimeout(esperaResposta);
+
+  if (sub === "mac") {
+    $("mac").textContent = d.mac || "—";
+    $("ip").textContent = d.ip || "—";
+    $("hora").textContent = d.hora || "—";
+    log("mac", "info", `Leitor ${d.mac} online (IP ${d.ip}, ${d.hora})`);
+  } else if (sub === "cadastro") {
+    fimCadastro();
+    const ok = d.status === "cadastrada" || d.status === "removida";
+    log("cadastro", ok ? "cad-ok" : "cad-no", `${d.status}${d.uid ? " · " + nomeCartao(d.uid) : ""}${d.hora ? " · " + d.hora : ""}`);
+  } else if (sub === "acesso") {
+    const ok = d.resultado === "liberado";
+    log("acesso", ok ? "acesso-ok" : "acesso-no", `${d.resultado.toUpperCase()} · ${nomeCartao(d.uid)} · ${d.hora}`);
+  } else if (sub === "lista") {
+    const tags = d.tags || [];
+    $("tags").innerHTML = tags.length ? "" : '<span class="sub">Nenhum cartão cadastrado.</span>';
+    tags.forEach((u) => {
+      const s = document.createElement("span");
+      s.className = "tag";
+      s.textContent = nomeCartao(u);
+      $("tags").appendChild(s);
+    });
+    log("lista", "info", `${tags.length} cartão(ões): ${tags.join(", ") || "vazia"}`);
+  } else {
+    log(sub, "info", texto);
+  }
+}
+
+let esperaResposta = null;
+
+function enviar(cmd, aguardar = true) {
+  if (!client || !client.connected) return;
+  client.publish(prefixo + "cmd", cmd);
+  clearTimeout(esperaResposta);
+  if (aguardar) {
+    esperaResposta = setTimeout(() => log("aviso", "acesso-no",
+      `Ainda sem resposta ao ${cmd.split(" ")[0]} após 30 s. Confira se a simulação do Wokwi está rodando.`), 30000);
+  }
+}
+
+function inicioCadastro(texto) {
+  let s = 15;
+  $("modoTxt").textContent = texto;
+  $("cadInfo").style.display = "";
+  $("countdown").textContent = s;
+  clearInterval(timerCad);
+  timerCad = setInterval(() => {
+    s--;
+    $("countdown").textContent = Math.max(s, 0);
+    if (s <= 0) fimCadastro();
+  }, 1000);
+}
+function fimCadastro() {
+  clearInterval(timerCad);
+  $("cadInfo").style.display = "none";
+}
+
+$("btnCon").onclick = conectar;
+$("btnCad").onclick = () => { enviar("CADASTRO", false); inicioCadastro("Modo cadastro"); };
+$("btnList").onclick = () => enviar("LISTAR");
+$("btnRem").onclick = () => {
+  const uid = $("uid").value.trim().toUpperCase();
+  if (uid) enviar("REMOVER " + uid);
+};
+$("btnRemCartao").onclick = () => { enviar("REMOVER", false); inicioCadastro("Modo remoção"); };
+$("btnLimpar").onclick = () => ($("log").innerHTML = "");
+</script>
+</body>
+</html>
